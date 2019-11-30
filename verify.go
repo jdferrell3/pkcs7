@@ -13,30 +13,34 @@ import (
 // Verify is a wrapper around VerifyWithChain() that initializes an empty
 // trust store, effectively disabling certificate verification when validating
 // a signature.
-func (p7 *PKCS7) Verify() (err error) {
-	return p7.VerifyWithChain(nil)
+func (p7 *PKCS7) Verify(verifyExpired bool) (expired bool, err error) {
+	return p7.VerifyWithChain(nil, verifyExpired)
 }
 
 // VerifyWithChain checks the signatures of a PKCS7 object.
 // If truststore is not nil, it also verifies the chain of trust of the end-entity
 // signer cert to one of the root in the truststore.
-func (p7 *PKCS7) VerifyWithChain(truststore *x509.CertPool) (err error) {
+func (p7 *PKCS7) VerifyWithChain(truststore *x509.CertPool, verifyExpired bool) (expired bool, err error) {
+	expired = true
+
 	if len(p7.Signers) == 0 {
-		return errors.New("pkcs7: Message has no signers")
+		return true, errors.New("pkcs7: Message has no signers")
 	}
 	for _, signer := range p7.Signers {
-		if err := verifySignature(p7, signer, truststore); err != nil {
-			return err
+		if expired, err = verifySignature(p7, signer, truststore, verifyExpired); err != nil {
+			return expired, err
 		}
 	}
-	return nil
+	return expired, nil
 }
 
-func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool) (err error) {
+func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool, verifyExpired bool) (expired bool, err error) {
+	expired = true
+
 	signedData := p7.Content
 	ee := getCertFromCertsByIssuerAndSerial(p7.Certificates, signer.IssuerAndSerialNumber)
 	if ee == nil {
-		return errors.New("pkcs7: No certificate for signer")
+		return expired, errors.New("pkcs7: No certificate for signer")
 	}
 	signingTime := time.Now().UTC()
 	if len(signer.AuthenticatedAttributes) > 0 {
@@ -44,47 +48,62 @@ func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool) (e
 		var digest []byte
 		err := unmarshalAttribute(signer.AuthenticatedAttributes, OIDAttributeMessageDigest, &digest)
 		if err != nil {
-			return err
+			return expired, err
 		}
 		hash, err := getHashForOID(signer.DigestAlgorithm.Algorithm)
 		if err != nil {
-			return err
+			return expired, err
 		}
 		h := hash.New()
 		h.Write(p7.Content)
 		computed := h.Sum(nil)
 		if subtle.ConstantTimeCompare(digest, computed) != 1 {
-			return &MessageDigestMismatchError{
+			return expired, &MessageDigestMismatchError{
 				ExpectedDigest: digest,
 				ActualDigest:   computed,
 			}
 		}
 		signedData, err = marshalAttributes(signer.AuthenticatedAttributes)
 		if err != nil {
-			return err
+			return expired, err
 		}
 		err = unmarshalAttribute(signer.AuthenticatedAttributes, OIDAttributeSigningTime, &signingTime)
 		if err == nil {
 			// signing time found, performing validity check
 			if signingTime.After(ee.NotAfter) || signingTime.Before(ee.NotBefore) {
-				return fmt.Errorf("pkcs7: signing time %q is outside of certificate validity %q to %q",
+				return expired, fmt.Errorf("pkcs7: signing time %q is outside of certificate validity %q to %q",
 					signingTime.Format(time.RFC3339),
 					ee.NotBefore.Format(time.RFC3339),
 					ee.NotBefore.Format(time.RFC3339))
 			}
 		}
 	}
+
+	// check for expired chain
+	ct := time.Now()
+	if ct.Before(ee.NotAfter) {
+		expired = false
+	}
+
+	// if expired and we want to still verify, set the current time to that
+	// of the certificat end date
+	if expired && verifyExpired {
+		ct = ee.NotAfter
+	}
+
 	if truststore != nil {
-		_, err = verifyCertChain(ee, p7.Certificates, truststore, signingTime)
+		_, err = verifyCertChain(ee, p7.Certificates, truststore, ct)
 		if err != nil {
-			return err
+			return expired, err
 		}
 	}
 	sigalg, err := getSignatureAlgorithm(signer.DigestEncryptionAlgorithm, signer.DigestAlgorithm)
 	if err != nil {
-		return err
+		return expired, err
 	}
-	return ee.CheckSignature(sigalg, signedData, signer.EncryptedDigest)
+
+	// fmt.Printf("checking signature (expired = %v)\n", expired)
+	return expired, ee.CheckSignature(sigalg, signedData, signer.EncryptedDigest)
 }
 
 // GetOnlySigner returns an x509.Certificate for the first signer of the signed
