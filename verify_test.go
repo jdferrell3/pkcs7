@@ -22,7 +22,7 @@ func TestVerify(t *testing.T) {
 		t.Errorf("Parse encountered unexpected error: %v", err)
 	}
 
-	if err := p7.Verify(); err != nil {
+	if _, err := p7.Verify(false); err != nil {
 		t.Errorf("Verify failed with error: %v", err)
 	}
 	expected := []byte("We the People")
@@ -88,7 +88,7 @@ func TestVerifyEC2(t *testing.T) {
 		t.Errorf("Parse encountered unexpected error: %v", err)
 	}
 	p7.Certificates = []*x509.Certificate{fixture.Certificate}
-	if err := p7.Verify(); err != nil {
+	if _, err := p7.Verify(false); err != nil {
 		t.Errorf("Verify failed with error: %v", err)
 	}
 }
@@ -138,7 +138,7 @@ func TestVerifyAppStore(t *testing.T) {
 	if err != nil {
 		t.Errorf("Parse encountered unexpected error: %v", err)
 	}
-	if err := p7.Verify(); err != nil {
+	if _, err := p7.Verify(false); err != nil {
 		t.Errorf("Verify failed with error: %v", err)
 	}
 }
@@ -263,7 +263,7 @@ func TestVerifyApkEcdsa(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to decode base64 signature file: %v", err)
 	}
-	if err := p7.Verify(); err != nil {
+	if _, err := p7.Verify(false); err != nil {
 		t.Errorf("Verify failed with error: %v", err)
 	}
 }
@@ -299,7 +299,7 @@ func TestVerifyFirefoxAddon(t *testing.T) {
 	p7.Content = FirefoxAddonContent
 	certPool := x509.NewCertPool()
 	certPool.AppendCertsFromPEM(FirefoxAddonRootCert)
-	if err := p7.VerifyWithChain(certPool); err != nil {
+	if _, err := p7.VerifyWithChain(certPool, false); err != nil {
 		t.Errorf("Verify failed with error: %v", err)
 	}
 	// Verify the certificate chain to make sure the identified root
@@ -582,7 +582,7 @@ but that's not what ships are built for.
 				if err != nil {
 					t.Fatalf("Parse encountered unexpected error: %v", err)
 				}
-				if err := p7.VerifyWithChain(truststore); err != nil {
+				if _, err := p7.VerifyWithChain(truststore, false); err != nil {
 					t.Fatalf("Verify failed with error: %v", err)
 				}
 				// Verify the certificate chain to make sure the identified root
@@ -673,7 +673,7 @@ but that's not what ships are built for.
 	if err != nil {
 		t.Fatalf("Parse encountered unexpected error: %v", err)
 	}
-	if err := p7.Verify(); err != nil {
+	if _, err := p7.Verify(false); err != nil {
 		t.Fatalf("Verify failed with error: %v", err)
 	}
 	os.Remove(tmpSignerCertFile.Name()) // clean up

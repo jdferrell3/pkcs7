@@ -13,34 +13,43 @@ import (
 // Verify is a wrapper around VerifyWithChain() that initializes an empty
 // trust store, effectively disabling certificate verification when validating
 // a signature.
-func (p7 *PKCS7) Verify(verifyExpired bool) (expired bool, err error) {
+func (p7 *PKCS7) Verify(verifyExpired bool) (details CertDetails, err error) {
 	return p7.VerifyWithChain(nil, verifyExpired)
 }
 
 // VerifyWithChain checks the signatures of a PKCS7 object.
 // If truststore is not nil, it also verifies the chain of trust of the end-entity
 // signer cert to one of the root in the truststore.
-func (p7 *PKCS7) VerifyWithChain(truststore *x509.CertPool, verifyExpired bool) (expired bool, err error) {
-	expired = true
+func (p7 *PKCS7) VerifyWithChain(truststore *x509.CertPool, verifyExpired bool) (details CertDetails, err error) {
+	details.Expired = true
 
 	if len(p7.Signers) == 0 {
-		return true, errors.New("pkcs7: Message has no signers")
+		return details, errors.New("pkcs7: Message has no signers")
 	}
+	// fmt.Printf("%d\n%+v\n", len(p7.Signers), p7.Signers)
 	for _, signer := range p7.Signers {
-		if expired, err = verifySignature(p7, signer, truststore, verifyExpired); err != nil {
-			return expired, err
+		// fmt.Printf("%s\n", string(signer.IssuerAndSerialNumber.IssuerName.Bytes))
+		if details, err = verifySignature(p7, signer, truststore, verifyExpired); err != nil {
+			return details, err
 		}
 	}
-	return expired, nil
+	return details, nil
 }
 
-func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool, verifyExpired bool) (expired bool, err error) {
-	expired = true
+type CertDetails struct {
+	Expired  bool
+	Chains   [][]*x509.Certificate
+	Signers  []signerInfo
+	Verified bool
+}
+
+func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool, verifyExpired bool) (details CertDetails, err error) {
+	details.Expired = true
 
 	signedData := p7.Content
 	ee := getCertFromCertsByIssuerAndSerial(p7.Certificates, signer.IssuerAndSerialNumber)
 	if ee == nil {
-		return expired, errors.New("pkcs7: No certificate for signer")
+		return details, errors.New("pkcs7: No certificate for signer")
 	}
 	signingTime := time.Now().UTC()
 	if len(signer.AuthenticatedAttributes) > 0 {
@@ -48,30 +57,30 @@ func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool, ve
 		var digest []byte
 		err := unmarshalAttribute(signer.AuthenticatedAttributes, OIDAttributeMessageDigest, &digest)
 		if err != nil {
-			return expired, err
+			return details, err
 		}
 		hash, err := getHashForOID(signer.DigestAlgorithm.Algorithm)
 		if err != nil {
-			return expired, err
+			return details, err
 		}
 		h := hash.New()
 		h.Write(p7.Content)
 		computed := h.Sum(nil)
 		if subtle.ConstantTimeCompare(digest, computed) != 1 {
-			return expired, &MessageDigestMismatchError{
+			return details, &MessageDigestMismatchError{
 				ExpectedDigest: digest,
 				ActualDigest:   computed,
 			}
 		}
 		signedData, err = marshalAttributes(signer.AuthenticatedAttributes)
 		if err != nil {
-			return expired, err
+			return details, err
 		}
 		err = unmarshalAttribute(signer.AuthenticatedAttributes, OIDAttributeSigningTime, &signingTime)
 		if err == nil {
 			// signing time found, performing validity check
 			if signingTime.After(ee.NotAfter) || signingTime.Before(ee.NotBefore) {
-				return expired, fmt.Errorf("pkcs7: signing time %q is outside of certificate validity %q to %q",
+				return details, fmt.Errorf("pkcs7: signing time %q is outside of certificate validity %q to %q",
 					signingTime.Format(time.RFC3339),
 					ee.NotBefore.Format(time.RFC3339),
 					ee.NotBefore.Format(time.RFC3339))
@@ -82,28 +91,29 @@ func verifySignature(p7 *PKCS7, signer signerInfo, truststore *x509.CertPool, ve
 	// check for expired chain
 	ct := time.Now()
 	if ct.Before(ee.NotAfter) {
-		expired = false
+		details.Expired = false
 	}
 
 	// if expired and we want to still verify, set the current time to that
 	// of the certificat end date
-	if expired && verifyExpired {
+	if details.Expired && verifyExpired {
 		ct = ee.NotAfter
 	}
 
 	if truststore != nil {
-		_, err = verifyCertChain(ee, p7.Certificates, truststore, ct)
+		chains, err := verifyCertChain(ee, p7.Certificates, truststore, ct)
 		if err != nil {
-			return expired, err
+			return details, err
 		}
+		details.Chains = chains
 	}
 	sigalg, err := getSignatureAlgorithm(signer.DigestEncryptionAlgorithm, signer.DigestAlgorithm)
 	if err != nil {
-		return expired, err
+		return details, err
 	}
 
 	// fmt.Printf("checking signature (expired = %v)\n", expired)
-	return expired, ee.CheckSignature(sigalg, signedData, signer.EncryptedDigest)
+	return details, ee.CheckSignature(sigalg, signedData, signer.EncryptedDigest)
 }
 
 // GetOnlySigner returns an x509.Certificate for the first signer of the signed
